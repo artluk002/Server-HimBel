@@ -5,6 +5,8 @@ const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const { arrayAsString } = require('pdf-lib');
 const { channel } = require('diagnostics_channel');
 const { error } = require('console');
@@ -135,8 +137,28 @@ app.get('/getProductsBy/:type_id', async (req, res) => {
     try{
         const {type_id} = req.params;
         connection = await connectToDatabase();
-        const [results] = await connection.query(`SELECT * FROM product WHERE type_id = ${type_id}`);
+        const [results] = await connection.query(`SELECT * FROM product WHERE type_id = ${type_id} AND is_active = ${true}`);
          
+        res.json(results);
+    } catch (error) {
+        console.error('Ошибка выполнения запроса:', error);
+        res.status(500).send('Ошибка выполнения запроса');
+    } finally {
+        if (connection) {
+            try {
+                await connection.end(); // Закрываем соединение
+                console.log("Соединение с базой данных закрыто");
+            } catch (error) {
+                console.error("Ошибка при закрытии соединения:", error);
+            }
+        }
+    }
+});
+app.get('/getDeletedProducts', async (req, res) => {
+    let connection;
+    try{
+        connection = await connectToDatabase();
+        const [results] = await connection.query(`SELECT * FROM product WHERE is_active = ${false}`);
         res.json(results);
     } catch (error) {
         console.error('Ошибка выполнения запроса:', error);
@@ -753,17 +775,23 @@ app.post('/registration', async (req, res) => {
             }
             try {
                 connection = await connectToDatabase();
-                await connection.query(`INSERT INTO \`user\`(login, password, email, first_name, last_name, phone_number) VALUES ('${login}','${hash}','${email}','${name}','${surname}','${phone}')`); // Выполняем запрос к базе данных для создания нового пользователя
-                 
-                res.status(201).send('Пользователь успешно создан');
+
+            } catch (error) {
+
+            }
+            try {
+                connection = await connectToDatabase();
+                const result = await connection.query(`INSERT INTO \`user\`(login, password, email, first_name, last_name, phone_number) VALUES ('${login}','${hash}','${email}','${name}','${surname}','${phone}')`); // Выполняем запрос к базе данных для создания нового пользователя
+                console.log(result);
+                //res.status(201).send('Пользователь успешно создан');
             } catch (error) {
                 console.error('Ошибка создания пользователя:', error);
-                res.status(500).send('Ошибка создания пользователя');
+                res.status(500).send(error);
             }
         });
     } catch (error) {
         console.error('Ошибка создания пользователя:', error);
-        res.status(500).send('Ошибка создания пользователя');
+        res.status(500).send(error);
     } finally {
         if (connection) {
             try {
@@ -925,9 +953,6 @@ app.post('/addNewCharacteristcs', async (req, res) => {
     let connection;
     try {
         const {characteristics} = req.body;
-        console.log(characteristics);
-        res.status(200);
-    
         connection = await connectToDatabase();
             // Если характеристики товара были переданы, добавляем их в базу данных
             if (characteristics && characteristics.length > 0) {
@@ -1009,7 +1034,7 @@ app.post('/getProductForSearchBar', async (req, res) => {
         const { search } = req.body;
         connection = await connectToDatabase();
 
-        const result = await connection.query(`SELECT * FROM product WHERE name LIKE '%${search}%'`);
+        const result = await connection.query(`SELECT * FROM product WHERE name LIKE '%${search}%' AND is_active = ${true}`);
         console.log(result[0])
         res.status(200).json(result[0]);
     } catch (error) {
@@ -1171,6 +1196,28 @@ app.post('/deleteProductFromCompare', async (req, res) => {
         }
     }
 });
+app.post('/deleteProductFromFavorites', async (req, res) => {
+    let connection;
+    try {
+        const {productId, userId} = req.body;
+        console.log(productId, userId);
+        connection = await connectToDatabase();
+        await connection.query(`DELETE FROM favorites WHERE product_id = ${productId} AND user_id = ${userId}`);
+        res.status(200).send('Товар удален из избранного');
+    } catch (error) {
+        console.error('Ошибка выполнения запроса:', error);
+        res.status(500).send('Ошибка выполнения запроса');
+    } finally {
+        if (connection) {
+            try {
+                await connection.end(); // Закрываем соединение
+                //console.log("Соединение с базой данных закрыто");
+            } catch (error) {
+                console.error("Ошибка при закрытии соединения:", error);
+            }
+        }
+    }
+});
 app.post('/areProductInOrder', async (req, res) => {
     let connection;
     try {
@@ -1268,6 +1315,77 @@ app.post('/delProductCharacteristic', async (req, res) => {
     } 
 });
 
+let verificationCodes = {}; // In-memory storage for verification codes
+
+app.post('/send-verification-email', (req, res) => {
+    const { email } = req.body;
+    const code = crypto.randomInt(100000, 999999).toString();
+  
+    verificationCodes[email] = code;
+  
+    // Configure nodemailer
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: 'himbelhelp@gmail.com',
+        pass: 'ziiy bvcy rury dfqy',
+      },
+    });
+  
+    const mailOptions = {
+      from: 'himbelhelp@gmail.com',
+      to: email,
+      subject: 'Email Verification',
+      text: `Your verification code is: ${code}`,
+    };
+  
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        return res.status(500).send('Error sending email');
+      }
+      res.status(200).send('Verification email sent');
+    });
+  });
+
+  app.post('/verify-code', (req, res) => {
+    const { code } = req.body;
+    const email = Object.keys(verificationCodes).find(email => verificationCodes[email] === code);
+  
+    if (email) {
+      delete verificationCodes[email]; // Remove code after verification
+      res.status(200).send('Code verified');
+    } else {
+      res.status(400).send('Invalid code');
+    }
+  });
+app.post('/delCharacteristics', async (req, res) => {
+    let connection;
+    try {
+        const {characteristics} = req.body;
+        connection = await connectToDatabase();
+            // Если характеристики товара были переданы, добавляем их в базу данных
+            if (characteristics && characteristics.length > 0) {
+                await Promise.all(characteristics.map(async (characteristic) => {
+                    await connection.query(`DELETE FROM characteristic WHERE id = ${characteristic.characteristic_id}`);
+                }));
+            }
+        res.status(200).send('Характеристики успешно удалены');
+    } catch (error) {
+        console.error('Ошибка выполнения запроса:', error);
+        res.status(500).send('Ошибка выполнения запроса');
+    } finally {
+        if (connection) {
+            try {
+                await connection.end(); // Закрываем соединение
+                //console.log("Соединение с базой данных закрыто");
+            } catch (error) {
+                console.error("Ошибка при закрытии соединения:", error);
+            }
+        }
+    }
+});
+
+
 // Обработчики для Delete запросов
 app.delete('/delType/:id',  async (req, res) => {
     let connection;
@@ -1297,7 +1415,7 @@ app.delete('/delProduct/:id', async (req, res) => {
         const {id} = req.params;
         connection = await connectToDatabase();
         //await connection.query(`DELETE FROM product_characteristic WHERE product_id = ${id}`);
-        await connection.query(`DELETE FROM product WHERE id = ${id}`); // Выполняем запрос к базе данных для создания нового пользователя
+        await connection.query(`UPDATE product SET is_active = ${false} WHERE id = ${id}`); // Выполняем запрос к базе данных для создания нового пользователя
         res.status(200).send('Продук успешно удалён');
     } catch (error) {
         console.error('Ошибка удаления продукта:', error);
@@ -1547,13 +1665,34 @@ app.put('/updateReview', async (req, res) => {
     let connection;
     try {
         const {id, title, text, rating} = req.body;
-        console.log(req.body);
+        //console.log(req.body);
         connection = await connectToDatabase();
         await connection.query(`UPDATE review SET title = '${title}', description = '${text}', raiting = ${rating} WHERE id = ${id}`);
         res.status(200).send('отзыв успешно обновлён');
     } catch (error) {
         console.error('Ошибка изменения отзыва:', error);
         res.status(500).send('Ошибка изменения отзыва');
+    } finally {
+        if (connection) {
+            try {
+                await connection.end(); // Закрываем соединение
+                console.log("Соединение с базой данных закрыто");
+            } catch (error) {
+                console.error("Ошибка при закрытии соединения:", error);
+            }
+        }
+    }
+});
+app.put(`/recoveryProduct`, async (req, res) => {
+    let connection;
+    try {
+        const {id} = req.body;
+        connection = await connectToDatabase();
+        await connection.query(`UPDATE product SET is_active = ${true} WHERE id = ${id}`);
+        res.status(200).send('Продукт успешно восстановлен');
+    } catch (error) {
+        console.error('Ошибка изменения продукта:', error);
+        res.status(500).send('Ошибка изменения продукта');
     } finally {
         if (connection) {
             try {
